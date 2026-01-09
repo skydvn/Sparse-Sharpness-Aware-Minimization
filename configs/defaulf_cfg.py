@@ -84,6 +84,15 @@ class default_parser:
         parser.add_argument('--model', type=str, default='resnet18', help="Model in registry to use.")
         return parser
 
+    def fssam_parser(self):
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument('--rho_schedule', type=str, default='cosine',
+                            choices=['constant', 'cosine', 'linear_decay', 'linear_growth',
+                                     'cyclic', 'step_decay', 'warmup_cosine'])
+        parser.add_argument('--rho_min', type=float, default=0.01)
+        parser.add_argument('--rho_max', type=float, default=0.5)
+        parser.add_argument('--rho_update_freq', type=int, default=30)
+        return parser
 
     def get_args(self):
         all_parser_funcs = []

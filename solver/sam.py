@@ -75,23 +75,121 @@ class SAM(torch.optim.Optimizer):
 @OPTIMIZER_REGISTRY.register()
 class FSSAM(torch.optim.Optimizer):
     @configurable()
-    def __init__(self, params, base_optimizer, rho) -> None:
+    def __init__(self, params, base_optimizer, rho, rho_schedule="constant",
+                 rho_min=None, rho_max=None, rho_update_freq=1, total_epochs=None) -> None:
+        """
+        FSSAM optimizer with adaptive rho scheduling.
+
+        Args:
+            params: model parameters
+            base_optimizer: underlying optimizer (e.g., SGD, Adam)
+            rho: initial perturbation radius
+            rho_schedule: schedule type - "constant", "cosine", "linear_decay", "linear_growth", "cyclic"
+            rho_min: minimum rho value (default: rho * 0.5)
+            rho_max: maximum rho value (default: rho * 2.0)
+            rho_update_freq: frequency of rho updates in epochs
+            total_epochs: total training epochs (needed for some schedules)
+        """
         assert isinstance(base_optimizer, torch.optim.Optimizer), f"base_optimizer must be an `Optimizer`"
         self.base_optimizer = base_optimizer
 
         assert 0 <= rho, f"rho should be non-negative:{rho}"
         self.rho = rho
+        self.initial_rho = rho
+        self.rho_schedule = rho_schedule
+        self.rho_min = rho_min if rho_min is not None else rho * 0.5
+        self.rho_max = rho_max if rho_max is not None else rho * 2.0
+        self.rho_update_freq = rho_update_freq
+        self.total_epochs = total_epochs
+        self.current_epoch = 0
+
         super(FSSAM, self).__init__(params, dict(rho=rho))
 
         self.param_groups = self.base_optimizer.param_groups
         for group in self.param_groups:
             group["rho"] = rho
+            group["rho_schedule"] = rho_schedule
+            group["rho_update_freq"] = rho_update_freq
 
     @classmethod
     def from_config(cls, args):
         return {
             "rho": args.rho,
+            "rho_schedule": getattr(args, "rho_schedule", "constant"),
+            "rho_min": getattr(args, "rho_min", None),
+            "rho_max": getattr(args, "rho_max", None),
+            "rho_update_freq": getattr(args, "rho_update_freq", 1),
+            "total_epochs": getattr(args, "epochs", None),
         }
+
+    @torch.no_grad()
+    def update_rho(self, epoch):
+        """
+        Update rho based on the schedule and current epoch.
+
+        Args:
+            epoch: current training epoch
+        """
+        self.current_epoch = epoch
+
+        if epoch % self.rho_update_freq != 0:
+            return self.rho
+
+        if self.rho_schedule == "constant":
+            new_rho = self.initial_rho
+
+        elif self.rho_schedule == "cosine":
+            # Cosine annealing from rho_max to rho_min
+            if self.total_epochs is None:
+                raise ValueError("total_epochs must be specified for cosine schedule")
+            progress = min(epoch / self.total_epochs, 1.0)
+            new_rho = self.rho_min + (self.rho_max - self.rho_min) * 0.5 * (1 + math.cos(math.pi * progress))
+
+        elif self.rho_schedule == "linear_decay":
+            # Linear decay from initial_rho to rho_min
+            if self.total_epochs is None:
+                raise ValueError("total_epochs must be specified for linear_decay schedule")
+            progress = min(epoch / self.total_epochs, 1.0)
+            new_rho = self.initial_rho - (self.initial_rho - self.rho_min) * progress
+
+        elif self.rho_schedule == "linear_growth":
+            # Linear growth from initial_rho to rho_max
+            if self.total_epochs is None:
+                raise ValueError("total_epochs must be specified for linear_growth schedule")
+            progress = min(epoch / self.total_epochs, 1.0)
+            new_rho = self.initial_rho + (self.rho_max - self.initial_rho) * progress
+
+        elif self.rho_schedule == "cyclic":
+            # Cyclic between rho_min and rho_max with period of rho_update_freq * 10 epochs
+            cycle_length = self.rho_update_freq * 10
+            progress = (epoch % cycle_length) / cycle_length
+            new_rho = self.rho_min + (self.rho_max - self.rho_min) * 0.5 * (1 + math.cos(2 * math.pi * progress))
+
+        elif self.rho_schedule == "step_decay":
+            # Step decay: reduce by half every rho_update_freq epochs
+            decay_steps = epoch // self.rho_update_freq
+            new_rho = max(self.initial_rho * (0.5 ** decay_steps), self.rho_min)
+
+        elif self.rho_schedule == "warmup_cosine":
+            # Warmup for 10% then cosine decay
+            if self.total_epochs is None:
+                raise ValueError("total_epochs must be specified for warmup_cosine schedule")
+            warmup_epochs = int(0.1 * self.total_epochs)
+            if epoch < warmup_epochs:
+                new_rho = self.rho_min + (self.initial_rho - self.rho_min) * (epoch / warmup_epochs)
+            else:
+                progress = (epoch - warmup_epochs) / (self.total_epochs - warmup_epochs)
+                new_rho = self.rho_min + (self.initial_rho - self.rho_min) * 0.5 * (1 + math.cos(math.pi * progress))
+        else:
+            raise ValueError(f"Unknown rho_schedule: {self.rho_schedule}")
+
+        # Update rho in optimizer
+        self.rho = new_rho
+        print(f"================= Rho update to {self.rho} =================")
+        for group in self.param_groups:
+            group["rho"] = new_rho
+
+        return new_rho
 
     @torch.no_grad()
     def first_step(self, zero_grad=False):
@@ -116,8 +214,24 @@ class FSSAM(torch.optim.Optimizer):
         if zero_grad: self.zero_grad()
 
     @torch.no_grad()
-    def step(self, closure=None, **kwargs):
+    def step(self, closure=None, epoch=None, batch_idx=None, logger=None, **kwargs):
+        """
+        Perform a single optimization step with adaptive rho.
+
+        Args:
+            closure: A closure that reevaluates the model and returns the loss
+            epoch: Current training epoch
+            batch_idx: Current batch index
+            logger: Logger object for logging rho updates
+        """
         assert closure is not None, "SAM requires closure, which is not provided."
+
+        # Update rho at the beginning of each epoch (batch_idx == 0)
+        if epoch is not None and batch_idx is not None and batch_idx == 0:
+            old_rho = self.rho
+            new_rho = self.update_rho(epoch)
+            if logger is not None and abs(new_rho - old_rho) > 1e-6:
+                logger.log(f'Epoch {epoch}: Updated rho from {old_rho:.6f} to {new_rho:.6f}')
 
         self.first_step(True)
         with torch.enable_grad():
@@ -136,6 +250,7 @@ class FSSAM(torch.optim.Optimizer):
             p=2
         )
         return norm
+
 
 @OPTIMIZER_REGISTRY.register()
 class SSAMF(SAM):

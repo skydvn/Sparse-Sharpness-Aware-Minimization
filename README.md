@@ -86,6 +86,11 @@ Take ResNet18 on CIFAR10 training with Fisher-SparseSAM as an example.
 python train.py --model resnet18 --dataset CIFAR10_cutout --datadir [Path2Data] --opt ssamf-sgd --rho 0.1 --weight_decay 1e-3 --sparsity 0.5 --num_samples 16 --update_freq 1 --seed 1234 --wandb
 ```
 
+Take ResNet18 on CIFAR10 training with Flat2Sharp SAM as an example
+```bash
+python train.py --model resnet18 --dataset CIFAR100_cutout --datadir ./dataset --opt fssam-sgd --lr 0.05 --weight_decay 1e-3 --rho 0.5 --rho_max 0.5 --rho_min 0.01 --rho_schedule linear_decay --rho_update_freq 100 --epochs 400 --seed 1234 --wandb
+```
+
 
 Training ResNet50 on ImageNet with SSAMF:
 ```bash
