@@ -115,7 +115,7 @@ class ImageNet_base:
     def __init__(self, datadir) -> None:
         self.datadir = datadir
 
-        self.n_classes = 1000
+        self.n_classes = 100
         self.mean = np.array([0.485, 0.456, 0.406])
         self.std = np.array([0.229, 0.224, 0.225])
 
