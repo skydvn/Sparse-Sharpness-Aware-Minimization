@@ -12,6 +12,8 @@ def train_one_epoch(
     criterion, optimizer, epoch, logger, log_freq, use_closure
 ):
     model.train()
+    optimizer_name = type(optimizer).__name__
+    is_nsam = optimizer_name == 'NSAM'
 
     _memory = MetricLogger()
     _memory.add_meter('train_loss', Metric())
@@ -21,6 +23,7 @@ def train_one_epoch(
         batch_start = time.time()
         images = images.cuda(non_blocking=True)
         targets = targets.cuda(non_blocking=True)
+        indices = None
 
         def closure():
             output = model(images)
@@ -32,7 +35,27 @@ def train_one_epoch(
         
         optimizer.zero_grad()
         loss.backward()
-        if use_closure: 
+
+        if is_nsam:
+            # NSAM requires indices
+            if indices is None:
+                indices = torch.arange(len(images))
+
+            # NSAM handles its own forward/backward internally
+            loss, acc1, acc5 = optimizer.step(
+                model=model,
+                images=images,
+                targets=targets,
+                indices=indices,
+                criterion=criterion,
+                epoch=epoch,
+                step=epoch * len(train_loader) + batch_idx,
+                batch_idx=batch_idx,
+                train_data=train_loader.dataset,
+                logger=logger
+            )
+
+        elif use_closure:
             optimizer.step(
                 closure, 
                 epoch=epoch,

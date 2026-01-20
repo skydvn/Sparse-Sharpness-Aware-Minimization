@@ -94,6 +94,17 @@ class default_parser:
         parser.add_argument('--rho_update_freq', type=int, default=30)
         return parser
 
+    def nsam_parser(self):
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument('--adaptive', action='store_true',
+                            help='use adaptive SAM/NSAM')
+        parser.add_argument('--flat_sample_ratio', default=0.5, type=float,
+                            help='ratio of samples to use SAM in NSAM (0-1)')
+        parser.add_argument('--flat_selection', default='random', type=str,
+                            choices=['random', 'loss_based', 'confidence', 'curriculum'],
+                            help='strategy for selecting flat samples in NSAM')
+        return parser
+
     def get_args(self):
         all_parser_funcs = []
         for func_or_attr in dir(self):

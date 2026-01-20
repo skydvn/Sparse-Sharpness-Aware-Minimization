@@ -555,3 +555,353 @@ class SSAMD(SAM):
                 live_num += self.state[p]['mask'].sum().item() 
                 total_num += self.state[p]['mask'].numel()
         return float(live_num) / total_num
+
+
+@OPTIMIZER_REGISTRY.register()
+class FriendlySAM(torch.optim.Optimizer):
+    def __init__(self, params, base_optimizer, rho=0.05, sigma=1, lmbda=0.9, adaptive=False, **kwargs):
+        assert rho >= 0.0, f"Invalid rho, should be non-negative: {rho}"
+
+        defaults = dict(rho=rho, adaptive=adaptive, **kwargs)
+        super(FriendlySAM, self).__init__(params, defaults)
+
+        self.base_optimizer = base_optimizer(self.param_groups, **kwargs)
+        self.param_groups = self.base_optimizer.param_groups
+        self.defaults.update(self.base_optimizer.defaults)
+        self.sigma = sigma
+        self.lmbda = lmbda
+        print('FriendlySAM sigma:', self.sigma, 'lambda:', self.lmbda)
+
+    @torch.no_grad()
+    def first_step(self, zero_grad=False):
+
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None: continue
+                grad = p.grad.clone()
+                if not "momentum" in self.state[p]:
+                    self.state[p]["momentum"] = grad
+                else:
+                    p.grad -= self.state[p]["momentum"] * self.sigma
+                    self.state[p]["momentum"] = self.state[p]["momentum"] * self.lmbda + grad * (1 - self.lmbda)
+
+        grad_norm = self._grad_norm()
+        for group in self.param_groups:
+            scale = group["rho"] / (grad_norm + 1e-12)
+
+            for p in group["params"]:
+                if p.grad is None: continue
+                self.state[p]["old_p"] = p.data.clone()
+                e_w = (torch.pow(p, 2) if group["adaptive"] else 1.0) * p.grad * scale.to(p)
+                p.add_(e_w)  # climb to the local maximum "w + e(w)"
+
+        if zero_grad: self.zero_grad()
+
+    @torch.no_grad()
+    def second_step(self, zero_grad=False):
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None: continue
+                p.data = self.state[p]["old_p"]  # get back to "w" from "w + e(w)"
+
+        self.base_optimizer.step()  # do the actual "sharpness-aware" update
+
+        if zero_grad: self.zero_grad()
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        assert closure is not None, "Sharpness Aware Minimization requires closure, but it was not provided"
+        closure = torch.enable_grad()(closure)  # the closure should do a full forward-backward pass
+
+        self.first_step(zero_grad=True)
+        closure()
+        self.second_step()
+
+    def _grad_norm(self):
+        shared_device = self.param_groups[0]["params"][
+            0].device  # put everything on the same device, in case of model parallelism
+        norm = torch.norm(
+            torch.stack([
+                ((torch.abs(p) if group["adaptive"] else 1.0) * p.grad).norm(p=2).to(shared_device)
+                for group in self.param_groups for p in group["params"]
+                if p.grad is not None
+            ]),
+            p=2
+        )
+        return norm
+
+    def load_state_dict(self, state_dict):
+        super().load_state_dict(state_dict)
+        self.base_optimizer.param_groups = self.param_groups
+
+
+@OPTIMIZER_REGISTRY.register()
+class ASAM(torch.optim.Optimizer):
+    def __init__(self, params, base_optimizer, rho=0.05, adaptive=False, **kwargs):
+        assert rho >= 0.0, f"Invalid rho, should be non-negative: {rho}"
+
+        defaults = dict(rho=rho, adaptive=adaptive, **kwargs)
+        super(ASAM, self).__init__(params, defaults)
+
+        self.base_optimizer = base_optimizer(self.param_groups, **kwargs)
+        self.param_groups = self.base_optimizer.param_groups
+        self.defaults.update(self.base_optimizer.defaults)
+
+    @torch.no_grad()
+    def first_step(self, zero_grad=False):
+        grad_norm = self._grad_norm()
+        for group in self.param_groups:
+            scale = group["rho"] / (grad_norm + 1e-12)
+
+            for p in group["params"]:
+                if p.grad is None: continue
+                self.state[p]["old_p"] = p.data.clone()
+                e_w = (torch.pow(p, 2) if group["adaptive"] else 1.0) * p.grad * scale.to(p)
+                p.add_(e_w)  # climb to the local maximum "w + e(w)"
+
+        if zero_grad: self.zero_grad()
+
+    @torch.no_grad()
+    def second_step(self, zero_grad=False):
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None: continue
+                p.data = self.state[p]["old_p"]  # get back to "w" from "w + e(w)"
+
+        self.base_optimizer.step()  # do the actual "sharpness-aware" update
+
+        if zero_grad: self.zero_grad()
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        assert closure is not None, "Sharpness Aware Minimization requires closure, but it was not provided"
+        closure = torch.enable_grad()(closure)  # the closure should do a full forward-backward pass
+
+        self.first_step(zero_grad=True)
+        closure()
+        self.second_step()
+
+    def _grad_norm(self):
+        shared_device = self.param_groups[0]["params"][0].device  # put everything on the same device, in case of model parallelism
+        norm = torch.norm(
+                    torch.stack([
+                        ((torch.abs(p) if group["adaptive"] else 1.0) * p.grad).norm(p=2).to(shared_device)
+                        for group in self.param_groups for p in group["params"]
+                        if p.grad is not None
+                    ]),
+                    p=2
+               )
+        return norm
+
+    def load_state_dict(self, state_dict):
+        super().load_state_dict(state_dict)
+        self.base_optimizer.param_groups = self.param_groups
+
+
+@OPTIMIZER_REGISTRY.register()
+class NSAM(torch.optim.Optimizer):
+
+    def __init__(self, params, base_optimizer, args, **kwargs):
+        rho = getattr(args, 'rho', 0.05)
+        adaptive = getattr(args, 'adaptive', False)
+
+        assert rho >= 0.0, f"Invalid rho, should be non-negative: {rho}"
+
+        defaults = dict(rho=rho, adaptive=adaptive, **kwargs)
+        super(NSAM, self).__init__(params, defaults)
+
+        self.base_optimizer = base_optimizer
+        self.param_groups = self.base_optimizer.param_groups
+
+        # Ensure rho and adaptive are in all param groups
+        for group in self.param_groups:
+            group.setdefault('adaptive', adaptive)
+            group.setdefault('rho', rho)
+
+        self.defaults.update(self.base_optimizer.defaults)
+        self.has_normal = False
+        self.args = args
+
+    def step(self, model=None, images=None, targets=None, indices=None,
+             criterion=None, epoch=None, step=None, batch_idx=None,
+             train_data=None, logger=None, **kwargs):
+        """
+        NSAM step with mixed normal/SAM optimization
+        Returns: (loss, acc1, acc5) for logging
+        """
+        device = images.device
+
+        # Get flat sample indices
+        flat_indices = self._get_flat_indices(
+            indices=indices,
+            epoch=epoch,
+            step=step,
+            train_data=train_data
+        )
+
+        # Split into normal and flat samples
+        flat_set = set(flat_indices.tolist() if torch.is_tensor(flat_indices) else flat_indices)
+        indices_list = indices.tolist() if torch.is_tensor(indices) else list(indices)
+
+        normal_mask = torch.tensor([idx not in flat_set for idx in indices_list], device=device)
+        normal_idx = torch.where(normal_mask)[0]
+        flat_idx = torch.where(~normal_mask)[0]
+
+        has_normal = len(normal_idx) > 0
+        has_flat = len(flat_idx) > 0
+
+        total_loss = 0.0
+
+        # Process normal samples (standard SGD)
+        if has_normal:
+            self.zero_grad()
+            normal_images = images[normal_idx]
+            normal_targets = targets[normal_idx]
+
+            output = model(normal_images)
+            loss = criterion(output, normal_targets)
+            total_loss += loss.item() * len(normal_idx)
+
+            loss.backward()
+            self.normal_step(zero_grad=False)
+
+        # Process flat samples (SAM)
+        if has_flat:
+            if not has_normal:
+                self.zero_grad()
+
+            flat_images = images[flat_idx]
+            flat_targets = targets[flat_idx]
+
+            # First forward-backward
+            output = model(flat_images)
+            loss = criterion(output, flat_targets)
+            total_loss += loss.item() * len(flat_idx)
+
+            loss.backward()
+            self.first_step(zero_grad=True)
+
+            # Second forward-backward at perturbed point
+            output = model(flat_images)
+            loss = criterion(output, flat_targets)
+            loss.backward()
+            self.second_step(zero_grad=True)
+
+        elif has_normal:
+            # Only normal samples
+            self.third_step(zero_grad=True)
+
+        # Compute final loss and accuracy
+        avg_loss = total_loss / len(images)
+
+        with torch.no_grad():
+            output = model(images)
+            from utils.engine import accuracy
+            acc1, acc5 = accuracy(output, targets, topk=(1, 5))
+
+        return torch.tensor(avg_loss), acc1, acc5
+
+    def _get_flat_indices(self, indices, epoch, step, train_data):
+        """
+        Determine which samples should use SAM optimization
+        """
+        flat_ratio = getattr(self.args, 'flat_sample_ratio', 0.5)
+        flat_selection = getattr(self.args, 'flat_selection', 'random')
+
+        if flat_ratio <= 0:
+            return torch.tensor([], dtype=torch.long)
+        elif flat_ratio >= 1.0:
+            return indices
+
+        n_flat = int(len(indices) * flat_ratio)
+
+        if flat_selection == 'random':
+            perm = torch.randperm(len(indices))
+            flat_idx = perm[:n_flat]
+            return indices[flat_idx]
+
+        elif flat_selection == 'curriculum':
+            # Decrease SAM ratio over time
+            max_epochs = getattr(self.args, 'epochs', 100)
+            curriculum_ratio = flat_ratio * (1.0 - epoch / max_epochs)
+            n_flat = int(len(indices) * max(curriculum_ratio, 0.1))
+            perm = torch.randperm(len(indices))
+            flat_idx = perm[:n_flat]
+            return indices[flat_idx]
+
+        else:
+            perm = torch.randperm(len(indices))
+            flat_idx = perm[:n_flat]
+            return indices[flat_idx]
+
+    @torch.no_grad()
+    def normal_step(self, zero_grad=False):
+        self.has_normal = True
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None: continue
+                if p not in self.state:
+                    self.state[p] = {}
+                self.state[p]["normal_g"] = p.grad.clone()
+        if zero_grad: self.zero_grad()
+
+    @torch.no_grad()
+    def first_step(self, zero_grad=False):
+        grad_norm = self._grad_norm()
+        for group in self.param_groups:
+            scale = group.get("rho", 0.05) / (grad_norm + 1e-12)
+            adaptive = group.get("adaptive", False)
+
+            for p in group["params"]:
+                if p.grad is None: continue
+                if p not in self.state:
+                    self.state[p] = {}
+                self.state[p]["old_p"] = p.data.clone()
+                e_w = (torch.pow(p, 2) if adaptive else 1.0) * p.grad * scale.to(p)
+                p.add_(e_w)
+        if zero_grad: self.zero_grad()
+
+    @torch.no_grad()
+    def second_step(self, zero_grad=False):
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None: continue
+                p.data = self.state[p]["old_p"]
+                if self.has_normal:
+                    # Combine gradients from normal and flat samples
+                    p.grad = p.grad + self.state[p]["normal_g"]
+
+        if self.has_normal:
+            self.has_normal = False
+
+        self.base_optimizer.step()
+        if zero_grad: self.zero_grad()
+
+    @torch.no_grad()
+    def third_step(self, zero_grad=False):
+        for group in self.param_groups:
+            for p in group["params"]:
+                if self.has_normal and p in self.state and "normal_g" in self.state[p]:
+                    p.grad = self.state[p]["normal_g"]
+
+        if self.has_normal:
+            self.has_normal = False
+
+        self.base_optimizer.step()
+        if zero_grad: self.zero_grad()
+
+    def _grad_norm(self):
+        shared_device = self.param_groups[0]["params"][0].device
+        norm = torch.norm(
+            torch.stack([
+                ((torch.abs(p) if group.get("adaptive", False) else 1.0) * p.grad).norm(p=2).to(shared_device)
+                for group in self.param_groups for p in group["params"]
+                if p.grad is not None
+            ]),
+            p=2
+        )
+        return norm
+
+    def load_state_dict(self, state_dict):
+        super().load_state_dict(state_dict)
+        self.base_optimizer.param_groups = self.param_groups

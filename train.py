@@ -75,14 +75,16 @@ def main(args):
             train_loader.sampler.set_epoch(epoch)
 
         train_stats = train_one_epoch(
-            model=model, 
-            train_loader=train_loader, 
-            criterion=criterion, 
-            optimizer=optimizer, 
-            epoch=epoch, 
+            model=model,
+            train_loader=train_loader,
+            criterion=criterion,
+            optimizer=optimizer,
+            epoch=epoch,
             logger=logger, log_freq=args.log_freq, use_closure=(args.opt[:4] == 'sam-' or args.opt[:4] == 'ssam'
                                                                 or args.opt[:6] == 'fssam-'),
         )
+
+
         lr_scheduler.step(epoch)
         val_stats = evaluate(model, val_loader)
 
