@@ -1,0 +1,12 @@
+python train.py --model resnet18 --dataset CIFAR100_cutout --datadir dataset --opt asam-sgd --rho 0.5 --weight_decay 1e-3 --sparsity 0.5 --num_samples 16 --update_freq 1 --seed 1234 --wandb
+python train.py --model resnet18 --dataset CIFAR100_cutout --datadir dataset --opt nsam-sgd --rho 0.5 --weight_decay 1e-3 --sparsity 0.5 --num_samples 16 --update_freq 1 --seed 1234 --wandb
+python train.py --model resnet18 --dataset CIFAR100_cutout --datadir dataset --opt flsam-sgd --rho 0.5 --weight_decay 1e-3 --sparsity 0.5 --num_samples 16 --update_freq 1 --seed 1234 --wandb
+python train.py --model resnet50 --dataset CIFAR100_cutout --datadir dataset --opt asam-sgd --rho 0.7 --weight_decay 1e-3 --sparsity 0.5 --num_samples 16 --update_freq 1 --seed 1234 --wandb
+python train.py --model resnet50 --dataset CIFAR100_cutout --datadir dataset --opt nsam-sgd --rho 0.7 --weight_decay 1e-3 --sparsity 0.5 --num_samples 16 --update_freq 1 --seed 1234 --wandb
+python train.py --model resnet50 --dataset CIFAR100_cutout --datadir dataset --opt flsam-sgd --rho 0.7 --weight_decay 1e-3 --sparsity 0.5 --num_samples 16 --update_freq 1 --seed 1234 --wandb
+python train.py --model resnet50 --dataset CIFAR100_cutout --datadir dataset --opt asam-sgd --rho 0.9 --weight_decay 1e-3 --sparsity 0.5 --num_samples 16 --update_freq 1 --seed 1234 --wandb
+python train.py --model resnet50 --dataset CIFAR100_cutout --datadir dataset --opt nsam-sgd --rho 0.9 --weight_decay 1e-3 --sparsity 0.5 --num_samples 16 --update_freq 1 --seed 1234 --wandb
+python train.py --model resnet50 --dataset CIFAR100_cutout --datadir dataset --opt flsam-sgd --rho 0.9 --weight_decay 1e-3 --sparsity 0.5 --num_samples 16 --update_freq 1 --seed 1234 --wandb
+python train.py --model resnet18 --dataset CIFAR100_cutout --datadir dataset --opt asam-sgd --rho 1.0 --weight_decay 1e-3 --sparsity 0.5 --num_samples 16 --update_freq 1 --seed 1234 --wandb
+python train.py --model resnet18 --dataset CIFAR100_cutout --datadir dataset --opt nsam-sgd --rho 1.0 --weight_decay 1e-3 --sparsity 0.5 --num_samples 16 --update_freq 1 --seed 1234 --wandb
+python train.py --model resnet18 --dataset CIFAR100_cutout --datadir dataset --opt flsam-sgd --rho 1.0 --weight_decay 1e-3 --sparsity 0.5 --num_samples 16 --update_freq 1 --seed 1234 --wandb
